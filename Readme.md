@@ -12,6 +12,25 @@
    3. [Thread Pooling](#thread-pooling)
       1. [Enter the Thread Pool](#enter-the-thread-pool)
       2. [Optimizing the Thread Pool](#optimizing-the-thread-pool)
+2. [Basic Synchronization](#basic-synchronization) 
+   1. [Synchronization Essentials](#synchronization-essentials)
+      1. [Blocking](#blocking)
+      2. [Locking](#locking)
+         1. [Exclusive Locking](#exclusive-locking)
+            1. [Lock](#lock)
+            2. [Monitor.Enter and Monitor.Exit](#monitor.enter-and-monitor.exit)
+            3. [SpinLock](#spinlock)
+            4. [Mutex](#mutex)
+            5. [Choosing the Synchronization Object](#choosing-the-synchronization-object)
+            6. [When to Lock](#when-to-lock)
+            7. [Locking and Atomicity](#locking-and-atomicity)
+            8. [Nested Locking](#nested-locking)
+            9. [Deadlocks](#deadlocks)
+            10. [Performance](#performance)
+         2. [Nonexclusive Locking](#nonexclusive-locking)
+            1. [Semaphore](#semaphore)
+            2. [SemaphoreSlim](#semaphoreSlim)
+            3. [Reader and Writer Lock](#reader-and-writer-lock)
 
 # Getting Started
 ## Introduction and Concepts
@@ -109,6 +128,12 @@ static void Main()
     worker.Start();
 }
 ```
+### Thread state
+![Thread State](/img/thread-state.jpg)
+
+You can query a thread's execution status via its ThreadState property. This returns a flags enum of type ThreadState, which combines three “layers” of data in a bitwise fashion.
+
+The ThreadState property is useful for diagnostic purposes, but unsuitable for synchronization, because a thread’s state may change in between testing ThreadState and acting on that information.
 
 ### Foreground and Background Threads
 Foreground threads keep the application alive for as long as any one of them is running. The application ends only after all foreground threads have ended. By default, threads you create explicitly are foreground threads.
@@ -140,6 +165,7 @@ There are, however, some cases where you don’t need to handle exceptions on a wo
 - Asynchronous delegates
 - BackgroundWorker
 - The Task Parallel Library
+
 
 ## Thread Pooling
 Whenever you start a thread, a few hundred microseconds are spent organizing such things as a memory stack. Each thread also consumes (by default) around 1 MB of memory. The thread pool cuts these overheads by sharing and recycling threads, allowing multithreading to be applied at a very granular level without a performance penalty. 
@@ -258,3 +284,270 @@ You can set the upper limit of threads that the pool will create by calling Thre
 - 25 per core in Framework 2.0
 
 You can also set the lower limit (by calling ThreadPool.SetMinThreads) to avoid to delay the allocation of threads which cost some time. Raising the minimum thread count improves concurrency when there are blocked threads.
+
+
+# Basic Synchronization
+## Synchronization Essentials
+The synchronization is responsible to coordinqte the qctions of threads for a predictable outcome. Synchronization is particularly important when threads access the same data.
+
+Synchronization constructs can be divided into four categories:
+- Simple blocking methods: These wait for another thread to finish or for a period of time to elapse. Sleep, Join, and Task.Wait are simple blocking methods.
+- Locking constructs: These limit the number of threads that can perform some activity or execute a section of code at a time. Exclusive locking constructs are most common — these allow just one thread in at a time. The standard exclusive locking constructs are lock (Monitor.Enter/Monitor.Exit), Mutex, and SpinLock. The nonexclusive locking constructs are Semaphore, SemaphoreSlim, and the reader/writer locks.
+- Signaling constructs: These allow a thread to pause until receiving a notification from another, avoiding the need for inefficient polling. There are two commonly used signaling devices: event wait handles and Monitor’s Wait/Pulse methods. Framework 4.0 introduces the CountdownEvent and Barrier classes.
+- Nonblocking synchronization constructs: These protect access to a common field by calling upon processor primitives. The CLR and C# provide the following nonblocking constructs: Thread.MemoryBarrier, Thread.VolatileRead, Thread.VolatileWrite, the volatile keyword, and the Interlocked class.
+
+### Blocking
+A thread is blocked when its execution is paused for some reason, such as when Sleeping or waiting for another to end via Join or EndInvoke. 
+
+A blocked thread immediately yields its processor time slice, so it doesn't consume any processor time until its blocking condition is satisfied.
+
+When a thread blocks or unblocks, the operating system performs a context switch. This incurs an overhead of a few microseconds.
+
+Unblocking happens in one of four ways:
+- by the blocking condition being satisfied
+- by the operation timing out (if a timeout is specified)
+- by being interrupted via Thread.Interrupt
+- by being aborted via Thread.Abort
+
+Sometimes a thread is blocked until a certain condition is met. Signaling and locking constructs achieve this efficiently by blocking until a condition is satisfied. However you can do the same by spinning in a polling loop. It is very wasteful on processor time because CLR and operating system keep performing important calculation and allocation resources. However spinning very briefly can be effective when you expect a condition to be satisfied soon (perhaps within a few microseconds) because it avoids the overhead and latency of a context switch. 
+
+### Locking
+#### Exclusive Locking
+Exclusive locking is used to ensure that only one thread can enter particular sections of code at a time. The two main exclusive locking constructs are lock and Mutex.
+
+##### Lock
+ The lock construct is faster and more convenient.
+```C#
+public class ThreadSafe
+{
+    static readonly object locker = new object();
+    static int val1, val2;
+ 
+    static void Go()
+    {
+        lock (locker)
+        {
+            if (val2 != 0) Console.WriteLine(val1 / val2);
+            val2 = 0;
+        }
+    }
+}
+```
+
+Only one thread can lock the synchronizing object (in this case locker) at a time, the others threads are blocked and push in a FIFO queue until the lock is released. 
+
+A Lock can be released only from the same thread that obtained it.
+
+##### Monitor.Enter and Monitor.Exit
+C#’s lock statement is in fact a shortcut for a call to the methods Monitor.Enter and Monitor.Exit, with a try/finally block. 
+```C#
+Monitor.Enter(locker);
+try
+{
+    if (val2 != 0) Console.WriteLine(val1 / val2);
+    val2 = 0;
+}
+finally 
+{ 
+    Monitor.Exit(locker); 
+}
+```
+
+Calling Monitor.Exit without first calling Monitor.Enter on the same object throws an exception.
+
+The code below is exactly what the C# 1.0, 2.0, and 3.0 compilers produce in translating a lock statement. However there is a vulnerability. If there is an exception within the implementation of Monitor.Enter, or between the call to Monitor.Enter and the try block and the lock is taken, it won’t be released — because we’ll never enter the try/finally block. This will result in a leaked lock.
+
+To avoid this vulnerability, CLR 4.0 changed the Enter's signature
+```C#
+bool lockTaken = false;
+try
+{
+  Monitor.Enter(locker, ref lockTaken);
+  // Do your stuff...
+}
+finally 
+{ 
+    if (lockTaken) Monitor.Exit(locker); 
+}
+```
+
+lockTaken will be false after calling Enter if (and only if) the Enter method throws an exception and the lock was not taken.
+
+Monitor also provides a TryEnter method that allows a timeout to be specified, either in milliseconds or as a TimeSpan. The method then returns true if a lock was obtained, or false if no lock was obtained because the method timed out. As with the Enter method, it’s overloaded in CLR 4.0 to accept a lockTaken argument.
+
+##### SpinLock
+The SpinLock struct let you lock without incurring the cost of context switching, at the expense of keeping a thread spinning. This approach is valid in high-contention scenarios when locking will be very brief.
+
+If you leave a spinlock contended for too long (we’re talking milliseconds at most), it will yield its time slice, causing a context switch just like an ordinary lock. When rescheduled, it will yield again — in a continual cycle of “spin yielding.” This consumes far fewer CPU resources than outright spinning — but more than blocking.
+
+Using a SpinLock is like using an ordinary lock, except:
+- Spinlocks are structs.
+- Spinlocks are not reentrant, meaning that you cannot call Enter on the same SpinLock twice in a row on the same thread. If you violate this rule, it will either throw an exception (if owner tracking is enabled) or deadlock (if owner tracking is disabled). You can specify whether to enable owner tracking when constructing the spinlock. Owner tracking incurs a performance hit.
+- SpinLock lets you query whether the lock is taken, via the properties IsHeld and, if owner tracking is enabled, IsHeldByCurrentThread.
+- SpinLock follow the robust pattern of providing a lockTaken argument
+
+```C#
+var spinLock = new SpinLock(true);   // Enable owner tracking
+bool lockTaken = false;
+try
+{
+    spinLock.Enter(ref lockTaken);
+    // Do stuff...
+}
+finally
+{
+    if (lockTaken) spinLock.Exit();
+}
+```
+
+##### Mutex
+A Mutex is like a C# lock, but it can work across multiple processes. In other words, Mutex can be computer-wide as well as application-wide.
+
+Acquiring and releasing an uncontended Mutex takes a few microseconds — about 50 times slower than a lock.
+
+With a Mutex class, you call the WaitOne method to lock and ReleaseMutex to unlock. Closing or disposing a Mutex automatically releases it. 
+
+A Mutex can be released only from the same thread that obtained it.
+
+```C#
+class OneAtATimePlease
+{
+  static void Main()
+  {
+    // Naming a Mutex makes it available computer-wide. Use a name that's
+    // unique to your company and application (e.g., include your URL).
+ 
+    using (var mutex = new Mutex(false, "my name"))
+    {
+      // Wait a few seconds if contended, in case another instance
+      // of the program is still in the process of shutting down.
+ 
+      if (!mutex.WaitOne(TimeSpan.FromSeconds (3), false))
+      {
+        Console.WriteLine("Another app instance is running. Bye!");
+        return;
+      }
+
+      RunProgram();
+    }
+  }
+ 
+  static void RunProgram()
+  {
+    Console.WriteLine("Running. Press Enter to exit");
+    Console.ReadLine();
+  }
+}
+```
+
+##### Choosing the Synchronization Object
+
+You can use any object visible from each threads on condition that be a reference type. 
+
+The synchronizing object is typically private (because this helps to encapsulate the locking logic) and an instance or static field. 
+
+However, you can use the containing object (this) or its type but you're not encapsulating the locking logic, so it becomes harder to prevent deadlocking and excessive blocking.
+
+##### When to Lock
+As a basic rule, you need to lock around accessing any writable shared field. Even in the simplest case — an assignment operation on a single field — you must consider synchronization.
+
+##### Locking and Atomicity
+If a group of variables are always read and written within the same lock, you can say the variables are read and written atomically.
+
+The atomicity provided by a lock is violated if an exception is thrown within a lock block
+```C#
+decimal _savingsBalance, _checkBalance;
+
+void Transfer (decimal amount)
+{
+    lock (locker)
+    {
+        savingsBalance += amount;
+        checkBalance -= amount + GetBankFee();
+    }
+}
+```
+
+If an exception was thrown by GetBankFee(), the bank would lose money. In this case, we could avoid the problem by calling GetBankFee earlier. A solution for more complex cases is to implement “rollback” logic within a catch or finally block.
+
+##### Nested Locking
+A thread can repeatedly lock the same object in a nested (reentrant) fashion
+```C#
+lock (locker)
+  lock (locker)
+    lock (locker)
+    {
+       // Do something...
+    }
+```
+
+or
+
+```C#
+Monitor.Enter(locker); Monitor.Enter(locker);  Monitor.Enter(locker); 
+// Do something...
+Monitor.Exit(locker);  Monitor.Exit(locker);   Monitor.Exit(locker);
+```
+
+In these scenarios, the object is unlocked only when the outermost lock statement has exited — or a matching number of Monitor.Exit statements have executed.
+
+##### Deadlocks
+A deadlock happens when two threads each wait for a resource held by the other, so neither can proceed.
+```C#
+object locker1 = new object();
+object locker2 = new object();
+ 
+new Thread (() => {
+    lock (locker1)
+    {
+        Thread.Sleep(1000);
+        lock(locker2); // Deadlock
+    }
+}).Start();
+
+lock (locker2)
+{
+    Thread.Sleep(1000);
+    lock(locker1); // Deadlock
+}
+```
+
+A threading deadlock causes participating threads to block indefinitely, unless you’ve specified a locking timeout.
+
+##### Performance
+Locking is fast: you can expect to acquire and release a lock in as little as 20 nanoseconds if the lock is uncontended. If it is contended, the consequential context switch moves the overhead closer to the microsecond region, although it may be longer before the thread is actually rescheduled. You can avoid the cost of a context switch with the SpinLock class — if you’re locking very briefly.
+
+Locking can degrade concurrency if locks are held for too long. This can also increase the chance of deadlock.
+
+#### Nonexclusive Locking
+##### Semaphore
+A semaphore is like a nightclub: it has a certain capacity, enforced by a bouncer. Once it’s full, no more people can enter, and a queue builds up outside. Then, for each person that leaves, one person enters from the head of the queue. The constructor requires a minimum of two arguments: the number of places currently available in the nightclub and the club’s total capacity.
+
+A semaphore with a capacity of one is similar to a Mutex or lock, except that the semaphore has no “owner” — it’s thread-agnostic. Any thread can call Release on a Semaphore, whereas with Mutex and lock, only the thread that obtained the lock can release it.
+
+Semaphores can be useful in limiting concurrency — preventing too many threads from executing a particular piece of code at once. 
+```C#
+class TheClub      // No door lists!
+{
+    static SemaphoreSlim _sem = new SemaphoreSlim (3);    // Capacity of 3
+ 
+    static void Main()
+    {
+        for (int i = 1; i <= 5; i++) new Thread(Enter).Start (i);
+    }
+ 
+    static void Enter (object id)
+    {
+        Console.WriteLine(id + " wants to enter");
+        sem.Wait();
+        Console.WriteLine(id + " is in!");           // Only three threads
+        Thread.Sleep(1000 * (int) id);               // can be here at
+        Console.WriteLine(id + " is leaving");       // a time.
+        sem.Release();
+    }
+}
+```
+
+##### SemaphoreSlim
+
+##### Reader and Writer Lock
