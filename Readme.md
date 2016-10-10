@@ -31,7 +31,7 @@
             1. [Semaphore](#semaphore)
             2. [SemaphoreSlim](#semaphoreSlim)
             3. [Reader and Writer Lock](#reader-and-writer-lock)
-               1. [ReaderWriterLockSlim](#readerwriterlockslim)
+               1. [ReadWriteLockSlim](#readwritelockslim)
                2. [Upgradable Locks and Recursion](#upgradable-locks-and-recursion)
 
 # Getting Started
