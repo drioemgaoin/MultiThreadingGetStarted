@@ -5,6 +5,11 @@
       3. [Threads vs Processes](#threads-vs-processes) 
    2. [Creating and Starting Threads](#creating-and-starting-threads)
       1. [Passing data to a Thread](#passing-data-to-a-thread)   
+      2. [Naming Threads](#naming-threads)  
+      3. [Foreground and Background Threads](#foreground-and-background-threads)
+      4. [Thread Priority](#thread-priority)
+      5. [Exception Handling](#exception-handling)
+   3. [Thread Pooling](#thread-pooling)
 
 # Getting Started
 ## Introduction and Concepts
@@ -51,7 +56,7 @@ public void Start() {
 }
 ```
 
-## Passing data to a Thread
+### Passing data to a Thread
 To pass data to a thread, you can:
 - Use a lambda expression when you create the thread. No limit of data you can pass. You can even wrap the entire implementation in a multi-statement lambda (() => {...})
 ```C#
@@ -89,3 +94,49 @@ public void Start(object parameter) {
     // Code executed in a thread
 }
 ```
+
+### Naming Threads
+Each thread has a Name property that you can set for the benefit of debugging.
+```C#
+static void Main()
+{
+    Thread.CurrentThread.Name = "main";
+
+    Thread worker = new Thread (Go);
+    worker.Name = "worker";
+    worker.Start();
+}
+```
+
+### Foreground and Background Threads
+Foreground threads keep the application alive for as long as any one of them is running. The application ends only after all foreground threads have ended. By default, threads you create explicitly are foreground threads.
+
+Background threads dont't keep the application alive. If the application ends all the background threads running are abruptly terminated, so if you have some finally block (or using block), they won't be executed.
+
+You can query or change a thread’s background status using its IsBackground property.
+
+### Thread Priority
+A Thread's priority determines how much execution time it gets relative to other active threads in the operating system, on the following scale
+enum ThreadPriority { Lowest, BelowNormal, Normal, AboveNormal, Highest }
+
+Warning: elevating a Thread's priority can lead problems such as resource starvation for other threads.
+
+If you want to perform real-time work, elevating the Thread's prioriy to Highest is not enough, you need to elevate the Process's priority to High. 
+
+If you change it to Realtime, you instruct the OS that you never want the process to yield CPU time to another process. So if your program enters in an accidental infinite loop, the operating system will be locked out and the only solution you will have it is force the shutdown of your computer.
+
+### Exception Handling
+Any try/catch/finally blocks in the scope where the thread is created have no effects when it starts executing because each thread had an independent execution path.
+
+To do that, several solution are available:
+- Add an exception handler on all thread entry methods.
+- For WPF and Windows Forms applications, you can use:
+  - Application.DispatcherUnhandledException and Application.ThreadException: fire only for exceptions thrown on the main UI thread. You still must handle exceptions on worker threads manually.
+  - AppDomain.CurrentDomain.UnhandledException: fires on any unhandled exception, but provides no means of preventing the application from shutting down afterward.
+
+There are, however, some cases where you don’t need to handle exceptions on a worker thread, because the .NET Framework does it for you. These are covered in upcoming sections, and are:
+- Asynchronous delegates
+- BackgroundWorker
+- The Task Parallel Library
+
+## Thread Pooling
