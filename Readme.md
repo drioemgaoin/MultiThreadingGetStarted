@@ -1,15 +1,17 @@
 1. [Getting Started](#getting-started)
-   1. [Introduction and Concepts](#introduction-and-concepts) 
+   1. [Introduction and Concepts](#introduction-and-concepts)
       1. [Join And Sleep](#joind-and-sleep)
-      2. [How Threading works](#how-threading-works)  
-      3. [Threads vs Processes](#threads-vs-processes) 
+      2. [How Threading works](#how-threading-works)
+      3. [Threads vs Processes](#threads-vs-processes)
    2. [Creating and Starting Threads](#creating-and-starting-threads)
-      1. [Passing data to a Thread](#passing-data-to-a-thread)   
-      2. [Naming Threads](#naming-threads)  
+      1. [Passing data to a Thread](#passing-data-to-a-thread)
+      2. [Naming Threads](#naming-threads)
       3. [Foreground and Background Threads](#foreground-and-background-threads)
       4. [Thread Priority](#thread-priority)
       5. [Exception Handling](#exception-handling)
    3. [Thread Pooling](#thread-pooling)
+      1. [Enter the Thread Pool](#enter-the-thread-pool)
+      2. [Optimizing the Thread Pool](#optimizing-the-thread-pool)
 
 # Getting Started
 ## Introduction and Concepts
@@ -140,3 +142,119 @@ There are, however, some cases where you don’t need to handle exceptions on a wo
 - The Task Parallel Library
 
 ## Thread Pooling
+Whenever you start a thread, a few hundred microseconds are spent organizing such things as a memory stack. Each thread also consumes (by default) around 1 MB of memory. The thread pool cuts these overheads by sharing and recycling threads, allowing multithreading to be applied at a very granular level without a performance penalty. 
+
+The thread pool have a limited number of worker threads that can be run simultaneously because too many active threads can throttle the operating system with administrative burden and render CPU caches ineffective. Once a limit is reached, jobs queue up and start only when another finishes.  
+
+### Enter the Thread Pool
+There are a number of ways to enter the thread pool:
+- Via the Task Parallel Library (from Framework 4.0)
+```C#
+static void Main()
+{
+    // No generic construction
+    Task.Factory.StartNew(Go);
+  
+    // Generic construction
+    var task = Task.Factory.StartNew<string>(Go("thread pool"));
+
+    // When we need the task's return value, we query its Result property:
+    // If it's still executing, the current thread will now block (wait)
+    // until the task finishes
+    // Any unhandled exceptions are automatically rethrown when you query the task's Result property, wrapped in an AggregateException. 
+    // However, if you fail to query its Result property (and don’t call Wait) any unhandled exception will take the process down.  
+    var result = result = task.Result;
+}
+ 
+static void Go()
+{
+    Console.WriteLine("Hello from the thread pool!");
+}
+
+static void Go(string name)
+{
+    Console.WriteLine(String.Format("Hello from the {0}!", name));
+}
+```
+
+- By calling ThreadPool.QueueUserWorkItem
+It doesn't let you return data from the thread but marshal any exception back to the caller.
+```C#
+static void Main()
+{
+    ThreadPool.QueueUserWorkItem(Go);
+    ThreadPool.QueueUserWorkItem(Go, 123);
+}
+ 
+static void Go(object data)
+{
+    Console.WriteLine("Hello from the thread pool! " + data);
+}
+```
+
+- Via asynchronous delegates
+It allows any number of typed arguments to be passed in both parameters and return values. Furthermore, unhandled exceptions are rethrown on the original thread (or more accurately, the thread that calls EndInvoke), and so they don’t need explicit handling.
+```C#
+static void Main()
+{
+    Func<string, int> method = Work;
+    IAsyncResult cookie = method.BeginInvoke("test", null, null);
+
+    // The final argument to BeginInvoke is a user state object that populates the AsyncState property of IAsyncResult. 
+    // It can contain anything you like;
+    method.BeginInvoke("test", Done, method);
+  
+    // ... here's where we can do other work in parallel...
+  
+    // Firstly, EndInvoke waits for the asynchronous delegate to finish executing, if it hasn’t already. 
+    // Secondly, it receives the return value (as well as any ref or out parameters). 
+    // Thirdly, it throws any unhandled worker exception back to the calling thread.
+    int result = method1.EndInvoke(cookie);
+    Console.WriteLine("String length is: " + result);
+}
+ 
+static int Work(string s) 
+{ 
+    return s.Length; 
+}
+
+static void Done (IAsyncResult asyncResult)
+{
+    var target = (Func<string, int>)asyncResult.AsyncState;
+    int result = target.EndInvoke(asyncResult);
+    Console.WriteLine("String length is: " + result);
+}
+```
+
+- Via BackgroundWorker
+```C#
+static void Main()
+{
+    var worker = new BackgroundWorker();
+    worker.DoWork += new DoWorkEventHandler(Work);
+    worker.RunWorkerAsync(132);
+}
+
+static void Work(object sender, DoWorkEventArgs e)
+{
+    var parameters = (object[])e.Argument;
+    Console.WriteLine("Hello from the thread pool! " + parameters[0]);
+}
+```
+
+The following constructs use the thread pool indirectly:
+- WCF, Remoting, ASP.NET, and ASMX Web Services application servers
+- System.Timers.Timer and System.Threading.Timer
+- Framework methods that end in Async, such as those on WebClient (the event-based asynchronous pattern), and most BeginXXX methods (the asynchronous programming model pattern)
+- PLINQ
+
+### Optimizing the Thread Pool
+The thread pool starts out with one thread in its pool. The thread pool can create a new thread each time the current ones are working and the max limit are not reached.
+
+You can set the upper limit of threads that the pool will create by calling ThreadPool.SetMaxThreads; the defaults are:
+- 1023 in Framework 4.0 in a 32-bit environment
+- 32768 in Framework 4.0 in a 64-bit environment
+- 250 per core in Framework 3.5
+- 25 per core in Framework 2.0
+
+You can also set the lower limit (by calling ThreadPool.SetMinThreads) to avoid to delay the allocation of threads which cost some time. Raising the minimum thread count improves concurrency when there are blocked threads.
