@@ -31,6 +31,8 @@
             1. [Semaphore](#semaphore)
             2. [SemaphoreSlim](#semaphoreSlim)
             3. [Reader and Writer Lock](#reader-and-writer-lock)
+               1. [ReaderWriterLockSlim](#readerwriterlockslim)
+               2. [Upgradable Locks and Recursion](#upgradable-locks-and-recursion)
 
 # Getting Started
 ## Introduction and Concepts
@@ -526,10 +528,11 @@ A semaphore is like a nightclub: it has a certain capacity, enforced by a bounce
 A semaphore with a capacity of one is similar to a Mutex or lock, except that the semaphore has no “owner” — it’s thread-agnostic. Any thread can call Release on a Semaphore, whereas with Mutex and lock, only the thread that obtained the lock can release it.
 
 Semaphores can be useful in limiting concurrency — preventing too many threads from executing a particular piece of code at once. 
+
 ```C#
-class TheClub      // No door lists!
+class TheClub
 {
-    static SemaphoreSlim _sem = new SemaphoreSlim (3);    // Capacity of 3
+    static SemaphoreSlim sem = new SemaphoreSlim(3);    // Capacity of 3
  
     static void Main()
     {
@@ -548,6 +551,128 @@ class TheClub      // No door lists!
 }
 ```
 
+A Semaphore, if named, can work across multiple processes in the same way as a Mutex.
+
 ##### SemaphoreSlim
 
+
 ##### Reader and Writer Lock
+###### ReadWriteLockSlim
+The ReadWriteLockSlim is used to protected a resource that is read by multiple threads and written by a small number of threads at a time. ReaderWriterLockSlim allows more concurrent Read activity than a simple lock.
+
+The ReadWriteLockSlim was introduced in Framework 3.5 in a replacement of ReaderWriterLock which is several times slower and has an inherent design fault in its mechanism for handling lock upgrades.
+
+There are two basic kinds of lock — a read lock and a write lock:
+- A write lock is universally exclusive.
+- A read lock is compatible with other read locks.
+
+So, a thread holding a write lock blocks all other threads trying to obtain a read or write lock (and vice versa). But if no thread holds a write lock, any number of threads may concurrently obtain a read lock.
+
+ReaderWriterLockSlim defines the following methods for obtaining and releasing read/write locks:
+- public void EnterReadLock();
+- public void ExitReadLock();
+- public void EnterWriteLock();
+- public void ExitWriteLock();
+
+Additionally, there are “Try” versions of all EnterXXX methods that accept timeout arguments in the style of Monitor.TryEnter.
+
+The following program demonstrates ReaderWriterLockSlim. Three threads continually enumerate a list, while two further threads append a random number to the list every second. A read lock protects the list readers, and a write lock protects the list writers:
+```C#
+class ReaderWriterLockSlimDemo
+{
+    static ReaderWriterLockSlim rw = new ReaderWriterLockSlim();
+    static List<int> items = new List<int>();
+    static Random rand = new Random();
+ 
+    static void Main()
+    {
+        new Thread(Read).Start();
+        new Thread(Read).Start();
+        new Thread(Read).Start();
+ 
+        new Thread(Write).Start("A");
+        new Thread(Write).Start("B");
+    }
+ 
+    static void Read()
+    {
+        while (true)
+        {
+            rw.EnterReadLock();
+            foreach (int i in items) Thread.Sleep(10);
+            rw.ExitReadLock();
+        }
+    }
+ 
+    static void Write (object threadID)
+    {
+        while (true)
+        {
+            int newNumber = GetRandNum(100);
+            rw.EnterWriteLock();
+            items.Add(newNumber);
+            rw.ExitWriteLock();
+            Console.WriteLine("Thread " + threadID + " added " + newNumber);
+            Thread.Sleep(100);
+        }
+    }
+ 
+    static int GetRandNum (int max) { lock (rand) return rand.Next(max); }
+}
+```
+
+###### Upgradable Locks and Recursion
+Sometimes it’s useful to swap a read lock for a write lock in a single atomic operation. 
+
+For instance, suppose you want to add an item to a list only if the item wasn’t already present. Ideally, you’d want to minimize the time spent holding the (exclusive) write lock, so you might proceed as follows:
+- Obtain a read lock.
+- Test if the item is already present in the list, and if so, release the lock and return.
+- Release the read lock.
+- Obtain a write lock.
+- Add the item.
+
+The problem is that another thread could sneak in and modify the list (e.g., adding the same item) between steps 3 and 4. ReaderWriterLockSlim addresses this through a third kind of lock called an upgradeable lock. An upgradeable lock is like a read lock except that it can later be promoted to a write lock in an atomic operation. 
+
+Here’s how you use it:
+- Call EnterUpgradeableReadLock.
+- Perform read-based activities (e.g., test whether the item is already present in the list).
+- Call EnterWriteLock (this converts the upgradeable lock to a write lock -> releases the read lock and obtains a fresh write lock, atomically).
+- Perform write-based activities (e.g., add the item to the list).
+- Call ExitWriteLock (this converts the write lock back to an upgradeable lock).
+- Perform any other read-based activities.
+- Call ExitUpgradeableReadLock.
+
+```C#
+while (true)
+{
+    int newNumber = GetRandNum(100);
+    rw.EnterUpgradeableReadLock();
+    if (!items.Contains(newNumber))
+    {
+        rw.EnterWriteLock();
+        items.Add(newNumber);
+        rw.ExitWriteLock();
+        Console.WriteLine("Thread " + threadID + " added " + newNumber);
+    }
+    rw.ExitUpgradeableReadLock();
+    Thread.Sleep(100);
+}
+```
+
+An upgradeable lock can coexist with any number of read locks, only one upgradeable lock can itself be taken out at a time.
+
+Ordinarily, nested and recursive locking is prohibited with ReaderWriterLockSlim, an exception will be throw. But if you construct your ReaderWriterLockSlim as followed, you can do recursive locking. Recursive locking can create undesired complexity because it’s possible to acquire more than one kind of lock.
+```C#
+rw.EnterWriteLock();
+rw.EnterReadLock();
+Console.WriteLine (rw.IsReadLockHeld);     // True
+Console.WriteLine (rw.IsWriteLockHeld);    // True
+rw.ExitReadLock();
+rw.ExitWriteLock();
+```
+
+The basic rule is that once you’ve acquired a lock, subsequent recursive locks can be less, but not greater, on the following scale:
+
+    Read Lock, Upgradeable Lock, Write Lock
+
+A request to promote an upgradeable lock to a write lock, however, is always legal.
