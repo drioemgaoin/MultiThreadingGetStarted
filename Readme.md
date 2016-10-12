@@ -2,8 +2,9 @@
    1. [Introduction and Concepts](#introduction-and-concepts)
       1. [Join And Sleep](#join-and-sleep)
       2. [How Threading works](#how-threading-works)
-      3. [Context Switching](#context-switching)
-      4. [Threads vs Processes](#threads-vs-processes)
+      3. [Thread-Local Storage](#thread-local-storage)
+      4. [Context Switching](#context-switching)
+      5. [Threads vs Processes](#threads-vs-processes)
    2. [Creating and Starting Threads](#creating-and-starting-threads)
       1. [Passing data to a Thread](#passing-data-to-a-thread)
       2. [Naming Threads](#naming-threads)
@@ -48,6 +49,14 @@
          2. [Monitor Wait and Pulse](#monitor-wait-and-pulse)
          3. [CountdownEvent](#countdownevent)
          4. [Nonblocking Synchronization](#nonblocking-synchronization)
+            1. [Volatile](#volatile)
+            2. [Interlocked](#interlocked)
+            3. [Thread.MemoryBarrier](#thread.memorybarrier)
+            4. [Thread.VolatileRead](#thread.volatileread)
+            5. [Thread.VolatileWrite](#thread.volatilewrite)
+   3.  [Timers](#timers)
+       1. [Multi-Threaded Timers](#multi-threaded-timers)
+       2. [Single-Threaded Timers](#single-threaded-timers)
 
 # Getting Started
 ## Introduction and Concepts
@@ -77,6 +86,48 @@ On a single-processor computer, a thread scheduler performs time-slicing — rapid
 On a multi-processor computer, multithreading is implemented with both time-slicing (operating system’s need to service its own threads) and concurrency, where different threads run code simultaneously on different CPUs. 
 
 A thread is said to be preempted when its execution is interrupted due to an external factor such as time-slicing. In most situations, a thread has no control over when and where it’s preempted.
+
+A program or method is thread-safe if it can be executed by multiple threads at the same time without side effects.
+
+### Thread-Local Storage
+Sometimes, you want to keep data isolated, ensuring that each thread has a separate copy. Local variables achieve exactly this, but they are useful only with transient data.
+
+There are three ways to implement thread-local storage:
+- [ThreadStatic]: mark a static field with the ThreadStatic attribute
+```C#
+[ThreadStatic] static int x;
+```
+Unfortunately, [ThreadStatic] doesn’t work with instance fields; nor does it play well with field initializers — they execute only once on the thread that's running when the static constructor executes. 
+
+- ThreadLocal<T>: provides thread-local storage for both static and instance fields — and allows you to specify default values.
+```C#
+// static field
+static ThreadLocal<int> x = new ThreadLocal<int> (() => 3); 
+```
+
+```C#
+// instance field
+var localRandom = new ThreadLocal<Random>(() => new Random());
+Console.WriteLine (localRandom.Value.Next());
+```
+The Random class is not thread-safe, so we have to either lock around using Random (limiting concurrency) or generate a separate Random object for each thread.
+
+- GetData and SetData: These store data in thread-specific “slots”. Thread.GetData reads from a thread’s isolated data store; Thread.SetData writes to it. Both methods require a LocalDataStoreSlot object to identify the slot. The same slot can be used across all threads and they’ll still get separate values.
+```C#
+// The same LocalDataStoreSlot object can be used across all threads.
+LocalDataStoreSlot secSlot = Thread.GetNamedDataSlot("securityLevel"); // creates a named slot. Thread.AllocateDataSlot to create an unnamed slot
+ 
+// This property has a separate value on each thread.
+int SecurityLevel
+{
+    get
+    {
+        object data = Thread.GetData secSlot);
+        return data == null ? 0 : (int)data;    // null == uninitialized
+    }
+    set { Thread.SetData (secSlot, value); }
+}
+```
 
 ### Context Switching
 A context switch (also sometimes referred to as a process switch or a task switch) is the switching of the CPU (central processing unit) from one process or thread to another. It is done by the scheduler itself.
@@ -201,6 +252,17 @@ There are, however, some cases where you don’t need to handle exceptions on a wo
 Whenever you start a thread, a few hundred microseconds are spent organizing such things as a memory stack. Each thread also consumes (by default) around 1 MB of memory. The thread pool cuts these overheads by sharing and recycling threads, allowing multithreading to be applied at a very granular level without a performance penalty. 
 
 The thread pool have a limited number of worker threads that can be run simultaneously because too many active threads can throttle the operating system with administrative burden and render CPU caches ineffective. Once a limit is reached, jobs queue up and start only when another finishes.  
+
+Pros: 
+- Reduce overhead of thread management (creation, schedule, release).
+- There is no worries about creating too many threads and hence affecting system performance. Thread pool size is constrained by the .NET runtime. The number of threads you can use at the same time is limited.
+ 
+Cons: 
+- Thread can't be name so difficult to debug
+- No control over the state and priority of the thread.
+- When submitting a process to the thread pool, you have no idea when the process will be executed. Your process may be delayed when there are high demand on the thread pool.
+- The thread pool is not suitable when you want to run two tasks or processes using two threads, and need these two tasks to be processed simultaneously in a deterministic fashion.
+- The .NET framework uses the thread pool for asynchronous operations, and this places additional demand on the limited number of available threads.
 
 ### Enter the Thread Pool
 There are a number of ways to enter the thread pool:
@@ -902,3 +964,192 @@ class SimpleWaitPulse
 ```
 
 ### Nonblocking Synchronization
+It can perform simple operations without ever blocking, pausing, or waiting. So, the thread doesn't suffer the overhead of a context switch and the latency of being descheduled. 
+
+The nonblocking approaches also work across multiple processes. 
+
+#### Volatile
+It is a keyword indicating that a field might be modified by multiple threads that are executing at the same time. 
+
+Fields that are declared volatile are not subject to compiler optimizations (caching data and re-ordering) that assume access by a single thread. This ensures that the most up-to-date value is present in the field at all times.
+
+A processor might cache a piece of data from the main memory and use the cached data in the execution of a thread, modify it, and only update the main memory at a later time.
+![Volatile](/img/volatile.jpg)
+
+Marking a field as volatile would make sure that it is not cached during the execution of a thread.
+
+#### Interlocked
+It allows to perform a couple of simple operations atomically. 
+
+For example, Reading and writing 64-bit fields is nonatomic on 32-bit environments (but it is on 64-bit environments) because it requires two separate instructions: one for each 32-bit memory location. So, if thread X reads a 64-bit value while thread Y is updating it, thread X may end up with a bitwise combination of the old and new values.
+
+```C#
+class Program
+{
+    static long sum;
+ 
+    static void Main()
+    {                                                            
+        // Simple increment/decrement operations:
+        Interlocked.Increment(ref sum);                              // 1
+        Interlocked.Decrement(ref sum);                              // 0
+ 
+        // Add/subtract a value:
+        Interlocked.Add(ref sum, 3);                                 // 3
+ 
+        // Read a 64-bit field:
+        Console.WriteLine(Interlocked.Read (ref sum));               // 3
+ 
+        // Write a 64-bit field while reading previous value:
+        // (This prints "3" while updating sum to 10)
+        Console.WriteLine(Interlocked.Exchange(ref sum, 10));       // 10
+ 
+        // Update a field only if it matches a certain value (10):
+        Console.WriteLine(Interlocked.CompareExchange(ref sum, 123, 10);      // 123
+    }
+}
+```
+
+#### Thread.MemoryBarrier
+It is a full memory barrier (full fence i.e. release and acquire semantics) which prevents any kind of instruction reordering (improve efficiency) or caching around that fence.
+
+```C#
+class Foo
+{
+    int answer1, answer2, answer3;
+    bool complete;
+ 
+    void A()
+    {
+        answer1 = 1; answer2 = 2; answer3 = 3;
+        Thread.MemoryBarrier();     // Barrier 1
+        complete = true;
+        Thread.MemoryBarrier();     // Barrier 2
+    }
+ 
+    void B()
+    {
+        Thread.MemoryBarrier();     // Barrier 3
+        if (complete)
+        {
+            Thread.MemoryBarrier(); // Barrier 4
+            Console.WriteLine (answer1 + answer2 + answer3);
+        }
+    }
+}
+```
+
+Barriers 1 and 4 prevent this example from writing “0”. Barriers 2 and 3 ensure that if B ran after A, reading "complete" would evaluate to true.
+
+#### Thread.VolatileRead
+It is a static method in the Thread class that read a field and guarantee to the most up-to-date value.
+
+#### Thread.VolatileWrite
+It is a static method in the Thread class that write a value to a field immediately. The value is not written in the cache then later in the main memory.
+
+# Timers
+It allows to execute some method repeatedly at regular intervals. 
+
+The .NET Framework provides four timers. Two of these are general-purpose multithreaded timers:
+- System.Threading.Timer
+- System.Timers.Timer
+
+The other two are special-purpose single-threaded timers:
+- System.Windows.Forms.Timer (Windows Forms timer)
+- System.Windows.Threading.DispatcherTimer (WPF timer)
+
+## Multi-Threaded Timers
+### System.Timers.Timer
+Fires an event and executes code on the event handler at regular intervals. This one is intended to be used as a sever-based or service component in a multithreaded environment.
+
+Runs in UI or worker thread
+ThreadSafe, each eventhandler has explicit locks
+Can be run in any thread using ISynchronizeObject
+Intuitive to use
+Good metronome-quality beat
+Support inheritance
+
+```C#
+using System;
+using System.Threading.Tasks;
+using System.Timers;
+
+class Example
+{
+   static void Main()
+   {
+      Timer timer = new Timer(1000);
+      timer.Elapsed += async ( sender, e ) => await HandleTimer();
+      timer.Start();
+      Console.Write("Press any key to exit... ");
+      Console.ReadKey();
+   }
+
+   private static Task HandleTimer()
+   {
+     Console.WriteLine("\nHandler not implemented..." );
+     throw new NotImplementedException();
+   }
+}
+```
+
+### System.Threading.Timer
+Runs worker thread (Thread pool)
+Good metronome-quality beat
+Timer event supports state object
+Initial timer event can be scheduled
+Purely used for numerical timing, where UI update is not or very less required.
+
+```C#
+using System;
+using System.Threading;
+ 
+class Program
+{
+    static void Main()
+    {
+        // First interval = 5000ms; subsequent intervals = 1000ms
+        Timer timer = new Timer(Tick, "tick...", 5000, 1000);
+        Console.ReadLine();
+        timer.Dispose();         // This both stops the timer and cleans up.
+    }
+ 
+    static void Tick (object data)
+    {
+        // This runs on a pooled thread
+        Console.WriteLine (data);          // Writes "tick..."
+    }
+}
+```
+
+## Single-Threaded Timers
+### System.Windows.Forms.Timer
+Runs in UI Thread
+Intuitive to use
+Support inheritance
+
+```C#
+private System.Windows.Forms.Timer WinTimer = new System.Windows.Forms.Timer();
+ObservableCollection<string> WinTimerList = new ObservableCollection<string>();
+
+private void btnwft_Click(object sender, RoutedEventArgs e)
+{
+    this.WinTimer.Interval = 1000; //1 sec
+    this.WinTimer.Tick += new EventHandler(WinTimer_Tick);
+    this.WinTimer.Start();
+    this.WinTimerList.Clear();
+    this.lstwft.DataContext = this.WinTimerList;
+}
+
+void WinTimer_Tick(object sender, EventArgs e)
+{
+    this.WinTimerList.Add(string.Format("Tick Generated from {0}", Thread.CurrentThread.Name));
+}
+```
+
+### System.Windows.Threading.DispatcherTimer
+Runs on the Dispatcher Thread by default (UI Thread)
+
+```C#
+
+```
