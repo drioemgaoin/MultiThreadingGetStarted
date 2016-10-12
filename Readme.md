@@ -2,7 +2,8 @@
    1. [Introduction and Concepts](#introduction-and-concepts)
       1. [Join And Sleep](#join-and-sleep)
       2. [How Threading works](#how-threading-works)
-      3. [Threads vs Processes](#threads-vs-processes)
+      3. [Context Switching](#context-switching)
+      4. [Threads vs Processes](#threads-vs-processes)
    2. [Creating and Starting Threads](#creating-and-starting-threads)
       1. [Passing data to a Thread](#passing-data-to-a-thread)
       2. [Naming Threads](#naming-threads)
@@ -18,7 +19,7 @@
       2. [Locking](#locking)
          1. [Exclusive Locking](#exclusive-locking)
             1. [Lock](#lock)
-            2. [Monitor.Enter and Monitor.Exit](#monitorenter-and-monitorexit)
+            2. [Monitor.Enter and Monitor.Exit](#monitorenter-and-monitorexitvis)
             3. [SpinLock](#spinlock)
             4. [Mutex](#mutex)
             5. [Choosing the Synchronization Object](#choosing-the-synchronization-object)
@@ -33,6 +34,11 @@
             3. [Reader and Writer Lock](#reader-and-writer-lock)
                1. [ReadWriteLockSlim](#readwritelockslim)
                2. [Upgradable Locks and Recursion](#upgradable-locks-and-recursion)
+      3. [Signaling](#signaling)
+         1. [Event Wait Handles](#event-wait-handles)
+         2. [Monitor Wait and Pulse](#monitor-wait-and-pulse)
+         3. [CountdownEvent](#countdownevent)
+         4. [Nonblocking Synchronization](#nonblocking-synchronization)
 
 # Getting Started
 ## Introduction and Concepts
@@ -53,13 +59,26 @@ Join waits the thread to end. A timeout can be included.
 Sleep pauses the current thread for a specified period.
 
 ### How Threading works
-Multithreading is managed internally by a thread scheduler, a function the CLR typically delegates to the operating system. A thread scheduler ensures all active threads are allocated appropriate execution time, and that threads that are waiting or blocked (for instance, on an exclusive lock or on user input) do not consume CPU time.
+Multithreading is managed internally by a Thread Scheduler, a function the CLR typically delegates to the operating system. 
 
-On a single-processor computer, a thread scheduler performs time-slicing — rapidly switching execution between each of the active threads.
+A thread scheduler is an oparating system's functionality that ensures all active threads (ready threads) are allocated appropriate execution time (micropocessor time), and that threads that are waiting or blocked (for instance, on an exclusive lock or on user input) do not consume CPU time.
+
+On a single-processor computer, a thread scheduler performs time-slicing — rapidly switching execution between each of the active threads (it is called Context Switching)
 
 On a multi-processor computer, multithreading is implemented with both time-slicing (operating system’s need to service its own threads) and concurrency, where different threads run code simultaneously on different CPUs. 
 
 A thread is said to be preempted when its execution is interrupted due to an external factor such as time-slicing. In most situations, a thread has no control over when and where it’s preempted.
+
+### Context Switching
+A context switch (also sometimes referred to as a process switch or a task switch) is the switching of the CPU (central processing unit) from one process or thread to another. It is done by the scheduler itself.
+
+The steps in a context switch are:
+- Save the context of the thread that just finished executing.
+- Place the thread that just finished executing at the end of the queue for its priority.
+- Find the highest priority queue that contains ready threads.
+- Remove the thread at the head of the queue, load its context, and execute it.
+
+Threads waiting for a synchronization object or input are not considered as ready thread so they won't be used by the Thread Scheduler so they won't consume any time CPU.
 
 ### Threads vs Processes
 Processes run in parallel on a computer whereas Threads run in parallel within a single process.
@@ -303,7 +322,7 @@ A thread is blocked when its execution is paused for some reason, such as when S
 
 A blocked thread immediately yields its processor time slice, so it doesn't consume any processor time until its blocking condition is satisfied.
 
-When a thread blocks or unblocks, the operating system performs a context switch. This incurs an overhead of a few microseconds.
+When a thread blocks or unblocks, the operating system performs a context switch (This incurs an overhead of a few microseconds). Context switching is when the CPU is switched from one process or thread to another. Switching the CPU from one thread to another involves suspending the current thread, saving its state (e.g., registers), and then restoring the state of the thread being switched to.
 
 Unblocking happens in one of four ways:
 - by the blocking condition being satisfied
@@ -554,7 +573,11 @@ class TheClub
 A Semaphore, if named, can work across multiple processes in the same way as a Mutex.
 
 ##### SemaphoreSlim
+SemaphoreSlim is a lightweight implementation of a Semaphore. The real purpose of the SemaphoreSlim is to supply a faster Semaphore (typically a Semaphore might take 1 ms per WaitOne and per Release, the SemaphoreSlim takes a quarter of this time, source ).
 
+SemaphoreSlim is based on SpinWait and Monitor, so the thread that waits to acquire the lock is burning CPU cycles for some time in hope to acquire the lock before letting it to another thread. If the thread can't acquire the lock, it lets the systems to switch context and tries again (by burning some CPU cycles) once it is scheduled again by the OS. With long waits this pattern can burn through a substantial amount of CPU cycles. 
+
+So the beast case scenario for such implementation is when most of the time there is no wait time and you can almost instantly acquire the lock.
 
 ##### Reader and Writer Lock
 ###### ReadWriteLockSlim
@@ -676,3 +699,91 @@ The basic rule is that once you’ve acquired a lock, subsequent recursive locks c
     Read Lock, Upgradeable Lock, Write Lock
 
 A request to promote an upgradeable lock to a write lock, however, is always legal.
+
+### Signaling
+Signaling is when one thread waits until it receives notification from another. 
+
+#### Event Wait Handles
+![Thread State](/img/event-wait-handles.jpg)
+
+#### AutoResetEvent
+An AutoResetEvent is like a ticket turnstile: inserting a ticket lets exactly one person through. The “auto” in the class’s name refers to the fact that an open turnstile automatically closes or “resets” after someone steps through. 
+
+A thread waits, or blocks, at the turnstile by calling WaitOne (wait at this “one” turnstile until it opens), and a ticket is inserted by calling the Set method. If a number of threads call WaitOne, a queue builds up behind the turnstile.
+
+Any (unblocked) thread with access to the AutoResetEvent object can call Set on it to release one blocked thread.
+
+```C#
+class AutoResetEvent
+{
+  static EventWaitHandle waitHandle = new AutoResetEvent(false); // true is equivalent to call Set immediately
+ 
+  static void Main()
+  {
+    new Thread(Waiter).Start();
+    Thread.Sleep(1000);                 // Pause for a second...
+    waitHandle.Set();                    // Wake up the Waiter.
+  }
+ 
+  static void Waiter()
+  {
+    Console.WriteLine("Waiting...");
+    waitHandle.WaitOne();                // Wait for notification
+    Console.WriteLine("Notified");
+  }
+}
+```
+
+![Thread State](/img/autoresetevent.jpg)
+
+If Set is called when no thread is waiting, the handle stays open for as long as it takes until some thread calls WaitOne. Even if you call several time Set, only the next one thread is letted through.
+
+Calling Reset on an AutoResetEvent closes the turnstile (should it be open) without waiting or blocking.
+
+#### ManualResetEvent
+A ManualResetEvent functions like an ordinary gate. 
+
+Calling Set opens the gate, allowing any number of threads calling WaitOne to be let through. Calling Reset closes the gate. Threads that call WaitOne on a closed gate will block; when the gate is next opened, they will be released all at once.
+
+A ManualResetEvent is useful in allowing one thread to unblock many other threads.
+
+#### CountdownEvent
+CountdownEvent lets you wait on more than one thread.
+
+You can reincrement a CountdownEvent’s count by calling AddCount. However, if it has already reached zero, this throws an exception: you can’t “unsignal” a CountdownEvent by calling AddCount. To avoid the possibility of an exception being thrown, you can instead call TryAddCount, which returns false if the countdown is zero.
+
+To unsignal a countdown event, call Reset: this both unsignals the construct and resets its count to the original value.
+
+```C#
+static CountdownEvent countdown = new CountdownEvent(3); // Initialize with "count" of 3.
+ 
+static void Main()
+{
+  new Thread (SaySomething).Start("I am thread 1");
+  new Thread (SaySomething).Start("I am thread 2");
+  new Thread (SaySomething).Start("I am thread 3");
+ 
+  countdown.Wait();   // Blocks until Signal has been called 3 times
+  Console.WriteLine("All threads have finished speaking!");
+}
+ 
+static void SaySomething (object thing)
+{
+  Thread.Sleep (1000);
+  Console.WriteLine (thing);
+  countdown.Signal();
+}
+```
+
+#### Creating a Cross-Process
+
+
+#### EventWaitHandle
+
+#### Pooling Wait Handles
+
+#### WaitAny, WaitAll and SignalAndWait
+
+#### Monitor Wait and Pulse
+
+### Nonblocking Synchronization
