@@ -775,15 +775,121 @@ static void SaySomething (object thing)
 }
 ```
 
+#### Barrier
+It implements a thread execution barrier, which allows many threads to rendezvous at a point in time. The class is very fast and efficient, and is built upon Wait, Pulse, and spinlocks.
+
+To use this class:
+- Instantiate it, specifying how many threads should partake in the rendezvous (you can change this later by calling AddParticipants/RemoveParticipants).
+- Have each thread call SignalAndWait when it wants to rendezvous.
+
+```C#
+static Barrier barrier = new Barrier (3);
+ 
+static void Main()
+{
+    new Thread(Speak).Start();
+    new Thread(Speak).Start();
+    new Thread(Speak).Start();
+}
+ 
+static void Speak()
+{
+    for (int i = 0; i < 5; i++)
+    {
+        Console.Write (i + " ");
+        barrier.SignalAndWait();
+    }
+}
+```
+
+![Barrier](/img/barrier.jpg)
+
 #### Creating a Cross-Process
+You can create an Event wait handle cross-process by using the EventWaitHandle’s constructor
+```C#
+EventWaitHandle wh = new EventWaitHandle (false, EventResetMode.AutoReset, "MyCompany.MyApp.SomeName");
+```
 
-
-#### EventWaitHandle
+If two applications each ran this code, they would be able to signal each other: the wait handle would work across all threads in both processes.
 
 #### Pooling Wait Handles
+If your application has lots of threads that spend most of their time blocked on a wait handle, you can reduce the resource burden by calling ThreadPool.RegisterWaitForSingleObject.
+
+For example, if 100 clients called the method "WaitHandle", 100 server threads would be tied up for the duration of the blockage. Replacing WaitOne with RegisterWaitForSingleObject (method WaitHandleReplaced) allows the method to return immediately
+```C#
+static ManualResetEvent waitHandle = new ManualResetEvent(false);
+
+void WaitHandle()
+{
+    _wh.WaitOne();
+    // ... continue execution
+}
+
+void WaitHandleReplaced
+{
+    var reg = ThreadPool.RegisterWaitForSingleObject(waitHandle, Resume, null, -1, true);
+    // ... continue execution
+}
+ 
+static void Resume(object data, bool timedOut)
+{
+    // ... continue execution
+}
+```
 
 #### WaitAny, WaitAll and SignalAndWait
+In addition to the Set, WaitOne, and Reset methods, there are static methods on the WaitHandle:
+- WaitAny: waits for any one of an array of wait handles.
+- WaitAll: waits on all of the given handles, atomically.
+- SignalAndWait: calls Set on one WaitHandle, and then calls WaitOne on another WaitHandle. After signaling the first handle, it will jump to the head of the queue in waiting on the second handle.
 
 #### Monitor Wait and Pulse
+It allow to wirte the signaling logic yourself using custom flags and fields (enclosed in lock statements), and then introduce Wait and Pulse commands to prevent spinning. With this logic you can achieve the functionality of every event wait handle we saw previously.
+
+However, it has some disadvantages over event wait handles:
+- Wait/Pulse cannot span application domains or processes on a computer.
+- You must remember to protect all variables related to the signaling logic with locks.
+
+Pulse executes asynchronously, meaning that it doesn't itself block or pause in any way. If another thread is waiting on the pulsed object, it’s unblocked. Otherwise the pulse has no effect and is silently ignored.
+
+Pulse provides one-way communication: a pulsing thread (potentially) signals a waiting thread. Pulse does not return a value indicating whether or not its pulse was received. Further, when a notifier pulses and releases its lock, there’s no guarantee that an eligible waiter will kick into life immediately. There can be a small delay, at the discretion of the thread scheduler, during which time neither thread has a lock. This means that the pulser cannot know if or when a waiter resumes — unless you code something specifically (for instance with another flag and another reciprocal, Wait and Pulse).
+
+The Pulse and PulseAll methods release threads blocked on a Wait statement. Pulse releases a maximum of one thread; PulseAll releases them all.
+
+##### How to use them
+- Define the synchronization object
+- Define field(s) for use in your custom blocking condition(s).
+- Use Monitor.Wait whenever you want to block.
+- Use Monitor.Pulse whenever you change (or potentially change) a blocking condition.
+
+```C#
+class SimpleWaitPulse
+{
+    static readonly object locker = new object();
+    static bool go;
+ 
+    static void Main()
+    {                                 // The new thread will block
+        new Thread(Work).Start();     // because go==false.
+ 
+        Console.ReadLine();           // Wait for user to hit Enter
+ 
+        lock (locker)                 // Let's now wake up the thread by
+        {                             // setting go=true and pulsing.
+            go = true;
+            Monitor.Pulse(locker);
+        }
+    }
+ 
+    static void Work()
+    {
+        lock (locker)
+            while (!go)
+            Monitor.Wait(locker);    // Lock is released while we’re waiting. Timeout is available as a second parameter
+ 
+        Console.WriteLine ("Woken!!!");
+    }
+}
+```
 
 ### Nonblocking Synchronization
