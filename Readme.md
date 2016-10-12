@@ -41,7 +41,7 @@
             4. [CountdownEvent](#countdownevent) 
             5. [Barrier](#barrier) 
             6. [Creating a Cross-Process](#creating-a-cross-process) 
-            7. [Pooling Wait Handles](#poloing-wait-handles) 
+            7. [Pooling Wait Handles](#pooling-wait-handles) 
             8. [WaitAny, WaitAll and SignalAndWait](#waitany-waitall-and-signalandwait) 
             9. [Monitor Wait and Pulse](#monitor-wait-and-pulse) 
                1. [How to use them](#how-to-use-them) 
