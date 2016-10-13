@@ -147,6 +147,8 @@ Processes are fully isolated from each other whereas Threads are a bit isolated.
 
 Threading also incurs a resource and CPU cost in scheduling and switching threads (when there are more active threads than CPU cores) — and there’s also a creation/tear-down cost. Multithreading will not always speed up your application — it can even slow it down if used excessively or inappropriately.
 
+![Thread vs Process](/img/thread-process.jpg)
+
 ## Creating and Starting Threads
 Threads are created by creating an instance of Thread and passing the method to execute.
 ```C#
@@ -249,13 +251,15 @@ There are, however, some cases where you don’t need to handle exceptions on a wo
 
 
 ## Thread Pooling
+A Thread Pool is a limited number of worker threads that can be run simultaneously to perform tasks.
+
 Whenever you start a thread, a few hundred microseconds are spent organizing such things as a memory stack. Each thread also consumes (by default) around 1 MB of memory. The thread pool cuts these overheads by sharing and recycling threads, allowing multithreading to be applied at a very granular level without a performance penalty. 
 
 The thread pool have a limited number of worker threads that can be run simultaneously because too many active threads can throttle the operating system with administrative burden and render CPU caches ineffective. Once a limit is reached, jobs queue up and start only when another finishes.  
 
 Pros: 
 - Reduce overhead of thread management (creation, schedule, release).
-- There is no worries about creating too many threads and hence affecting system performance. Thread pool size is constrained by the .NET runtime. The number of threads you can use at the same time is limited.
+- Number of thread is limited, there is no worries about creating too many threads and hence affecting system performance.
  
 Cons: 
 - Thread can't be name so difficult to debug
@@ -1047,6 +1051,58 @@ It is a static method in the Thread class that read a field and guarantee to the
 #### Thread.VolatileWrite
 It is a static method in the Thread class that write a value to a field immediately. The value is not written in the cache then later in the main memory.
 
+### Synchronization Contexts
+An alternative to locking manually is to lock declaratively. By deriving from ContextBoundObject and applying the Synchronization attribute, you instruct the CLR to apply locking automatically.
+```C#
+using System;
+using System.Threading;
+using System.Runtime.Remoting.Contexts;
+ 
+[Synchronization]
+public class AutoLock : ContextBoundObject
+{
+    public void Demo()
+    {
+        Console.Write("Start...");
+        Thread.Sleep(1000);           // We can't be preempted here
+        Console.WriteLine("end");     // thanks to automatic locking!
+    } 
+}
+ 
+public class Test
+{
+    public static void Main()
+    {
+        AutoLock safeInstance = new AutoLock();
+        new Thread(safeInstance.Demo).Start();     // Call the Demo
+        new Thread(safeInstance.Demo).Start();     // method 3 times
+        safeInstance.Demo();                       // concurrently.
+    }
+}
+```
+
+The CLR ensures that only one thread can execute code in safeInstance at a time. It does this by creating a single synchronizing object — and locking it around every call to each of safeInstance's methods or properties. The scope of the lock — in this case, the safeInstance object — is called a synchronization context.
+
+A ContextBoundObject can be thought of as a “remote” object, meaning all method calls are intercepted. To make this interception possible, when we instantiate AutoLock, the CLR actually returns a proxy — an object with the same methods and properties of an AutoLock object, which acts as an intermediary. It's via this intermediary that the automatic locking takes place. Overall, the interception adds around a microsecond to each method call.
+
+A synchronization context can extend beyond the scope of a single object. By default, if a synchronized object is instantiated from within the code of another, both share the same context (in other words, one big lock!) This behavior can be changed by specifying an integer flag in Synchronization attribute’s constructor:
+| Constant              | Meaning                                                                                                                       |
+| NOT_SUPPORTED	        | Equivalent to not using the Synchronized  attribute                                                                           |
+| SUPPORTED             | Joins the existing synchronization context if instantiated from another synchronized object, otherwise remains unsynchronized |
+| REQUIRED (default)    | Joins the existing synchronization context if instantiated from another synchronized object, otherwise creates a new context  |
+| REQUIRES_NEW          | Always creates a new synchronization context                                                                                  |
+
+```C#
+[Synchronization (SynchronizationAttribute.REQUIRES_NEW)]
+```
+
+The bigger the scope of a synchronization context, the easier it is to manage, but the less the opportunity for useful concurrency. At the other end of the scale, separate synchronization contexts invite deadlocks.
+
+#### Reentrancy
+A thread-safe method is sometimes called reentrant, because it can be preempted part way through its execution, and then called again on another thread without ill effect.
+
+If you use small scopes of synchronization, you can have some deadlocks. To avoid it, you can use the reentrancy by using Synchronization(true) attribute which allows to temporarily release the synchronization context's lock when execution leaves the context. The side effect of that is, during the release, any thread is free to call any method on the original object and change its state. 
+
 # Timers
 It allows to execute some method repeatedly at regular intervals. 
 
@@ -1135,7 +1191,7 @@ ObservableCollection<string> WinTimerList = new ObservableCollection<string>();
 private void btnwft_Click(object sender, RoutedEventArgs e)
 {
     this.WinTimer.Interval = 1000; //1 sec
-    this.WinTimer.Tick += new EventHandler(WinTimer_Tick);
+    this.WinTimer.Tick += new EventHandler(WinTimer_Tick);vis
     this.WinTimer.Start();
     this.WinTimerList.Clear();
     this.lstwft.DataContext = this.WinTimerList;
